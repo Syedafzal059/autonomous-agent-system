@@ -1,0 +1,457 @@
+================================================================================
+  AUTONOMOUS AGENT SYSTEM — EXECUTION BLUEPRINT
+  Repo: https://github.com/Syedafzal059/autonomous-agent-system.git
+================================================================================
+
+================================================================================
+1. PROJECT OVERVIEW
+================================================================================
+
+WHAT THIS SYSTEM IS
+-------------------
+An autonomous agent system is a software architecture that combines an LLM with 
+planner, executor, critic, and memory components to autonomously accomplish 
+complex, multi-step tasks. Instead of one-shot prompting, the system:
+  - Decomposes goals into sub-tasks
+  - Executes each step using tools
+  - Evaluates quality of outputs
+  - Retries when quality is insufficient
+  - Persists context across turns
+
+The agent iteratively plans → executes → reflects → improves until the task is 
+satisfactorily completed or a retry limit is reached.
+
+WHY IT MATTERS (REAL-WORLD RELEVANCE)
+-------------------------------------
+  - Research assistants: Multi-step literature search, synthesis, citation
+  - Data pipelines: Fetch → validate → transform → load with error recovery
+  - Code generation: Plan changes, implement, run tests, fix failures
+  - Customer support: Look up policies, compute answers, verify with history
+  - Task automation: Email triage, calendar scheduling, document summarization
+
+Organizations need agents that can handle ambiguity, self-correct, and combine 
+multiple tools—not just answer a single question.
+
+WHAT MAKES IT DIFFERENT FROM SIMPLE CHATBOTS
+--------------------------------------------
+  Chatbot: User → LLM → Response (single turn, no tools, no planning)
+  Agent:   User → Planner → Executor → Critic → Memory → [Retry Loop] → Output
+
+  Key differences:
+  - Planning: Breaks "What is GDP of Japan and India?" into [search Japan GDP, 
+    search India GDP, compare and summarize] instead of one vague call
+  - Tool use: Calls search, calculator, code execution—not text-only
+  - Self-evaluation: Critic checks factual correctness, completeness, format
+  - Memory: Uses past steps and user context to avoid redundant calls
+  - Retry: Improves answers when critic rejects output (e.g., wrong numbers)
+
+
+================================================================================
+2. SYSTEM ARCHITECTURE
+================================================================================
+
+FLOW DIAGRAM
+------------
+
+  User Input
+       |
+       v
+  +---------+     +----------+     +--------+     +--------+
+  | PLANNER | --> | EXECUTOR | --> | CRITIC | --> | MEMORY |
+  +---------+     +----------+     +--------+     +--------+
+       ^                |               |             |
+       |                |               v             |
+       |                |         [Pass?]             |
+       |                |          /    \            |
+       |                |        Yes     No          |
+       |                |         |       \          |
+       |                |         v        v         |
+       |                |    [Output]  [RETRY] ----->|
+       |                |                 |
+       +----------------+-----------------+
+              (feedback loop)
+
+COMPONENT BREAKDOWN
+------------------
+
+  PLANNER (task decomposition)
+  - Input: User goal, optional context from memory
+  - Output: Ordered list of sub-tasks (e.g., ["search X", "compute Y", "format Z"])
+  - Responsibilities: Parse intent, handle dependencies, avoid redundant steps
+  - Implementation: LLM prompt with structured output (JSON list or similar)
+
+  EXECUTOR (tool usage)
+  - Input: Current sub-task, available tools, short-term memory
+  - Output: Tool call + result (or failure)
+  - Responsibilities: Select correct tool, format inputs, handle errors
+  - Implementation: Tool registry + dispatch logic; each tool returns a result
+
+  CRITIC (evaluation logic)
+  - Input: Executor output, original task, expected format
+  - Output: Pass/Fail + optional feedback string
+  - Responsibilities: Check factual accuracy, completeness, format compliance
+  - Implementation: LLM-as-judge or rule-based checks (e.g., "contains number?")
+
+  MEMORY (short-term & long-term)
+  - Short-term: Current conversation turn—steps taken, tool calls, intermediate 
+    results. Implemented as in-memory list or dict, cleared per session.
+  - Long-term: Cross-session user preferences, past successful patterns. Optional 
+    Phase 6+; can use simple JSON file or later vector DB.
+
+  RETRY/REFLECTION LOOP
+  - When critic fails: Take feedback → optionally re-plan or re-execute specific 
+    step → run critic again. Max N retries (e.g., 2–3) to avoid infinite loops.
+  - Reflection: Critic output guides planner/executor for next attempt (e.g., 
+    "Answer must include units" → planner adds "format with units" step)
+
+
+================================================================================
+3. DIRECTORY STRUCTURE
+================================================================================
+
+agent_system/
+│
+├── config.py           # API keys (env), model names, retry limits, tool config
+├── main.py             # Entry point: parse args, run agent loop, print output
+│
+├── planner.py          # Planner: decompose user goal into sub-tasks
+├── executor.py         # Executor: run tools based on current task
+├── critic.py           # Critic: evaluate output quality (pass/fail + feedback)
+├── memory.py           # Memory: short-term (turn) and long-term (optional)
+│
+├── tools/
+│   ├── __init__.py     # Tool registry: register and lookup tools by name
+│   ├── search.py       # Search tool (e.g., duckduckgo or mock)
+│   └── calculator.py   # Calculator tool (safe math eval or simple parser)
+│
+├── requirements.txt    # openai, python-dotenv, requests (or httpx)
+└── .env.example        # EXAMPLE_API_KEY=sk-... (never commit .env)
+
+OPTIONAL (Phase 6+):
+├── agent.py            # Orchestrator: planner + executor + critic + retry loop
+└── prompts/            # Separate prompt templates for planner, critic, etc.
+
+FILE PURPOSES
+-------------
+  config.py     Central config: MODEL_NAME, MAX_RETRIES, TOOL_NAMES, API base URL
+  main.py       CLI or simple script; loads config, calls agent, handles I/O
+  planner.py    Single function: plan(goal, context) -> List[str]
+  executor.py   Single function: execute(task, tools, memory) -> Result
+  critic.py     Single function: evaluate(output, task) -> (passed: bool, feedback: str)
+  memory.py     Classes/functions: add_step(), get_context(), clear_session()
+  tools/*       Each tool: (name, description, func) for registry
+
+
+================================================================================
+4. PHASE-WISE IMPLEMENTATION PLAN
+================================================================================
+
+PHASE 1: Basic agent loop
+-------------------------
+  What to build:
+    - main.py: simple loop that calls planner then executor
+    - planner.py: LLM call returning list of 1–3 sub-tasks (no tools yet)
+    - executor.py: for now, just passes task to LLM and returns answer
+
+  Why it matters:
+    Establishes the core loop and LLM integration before adding complexity.
+
+  Expected outcome:
+    User: "What is 2+2?" → Planner: [compute 2+2] → Executor: 4
+
+  Deliverable: End-to-end flow from input to single-step output.
+
+--------------------------------------------------------------------------------
+
+PHASE 2: Add tools
+------------------
+  What to build:
+    - tools/__init__.py: ToolRegistry with register(name, desc, func)
+    - tools/calculator.py: calc(expression) -> result (use ast.literal_eval or 
+      safe eval; validate input)
+    - tools/search.py: search(query) -> snippets (mock or duckduckgo)
+    - executor.py: parse task to select tool, call it, return result
+
+  Why it matters:
+    Real utility comes from tools; the agent must learn when to use which.
+
+  Expected outcome:
+    User: "Search for Python tutorials" → Executor calls search("Python tutorials")
+    User: "What is 15 * 7?" → Executor calls calculator("15 * 7")
+
+  Deliverable: Tool selection and execution working for search + calculator.
+
+--------------------------------------------------------------------------------
+
+PHASE 3: Add memory
+-------------------
+  What to build:
+    - memory.py: ShortTermMemory class with add_step(task, result), get_context(), 
+      clear_session()
+    - Integrate into main loop: pass memory context to planner and executor
+
+  Why it matters:
+    Multi-step tasks need awareness of prior steps (e.g., "use the value from 
+    step 1 in step 2").
+
+  Expected outcome:
+    User: "Search GDP of Japan. Now multiply it by 2." 
+    → Memory stores search result; executor uses it for multiplication.
+
+  Deliverable: Context from previous steps available to planner/executor.
+
+--------------------------------------------------------------------------------
+
+PHASE 4: Add critic
+-------------------
+  What to build:
+    - critic.py: evaluate(output, task) using LLM or rules
+    - Integration: after executor returns, call critic; if fail, do not output yet
+
+  Why it matters:
+    Enables quality control before presenting answer to user.
+
+  Expected outcome:
+    Executor returns "42" for "What is GDP of Japan in 2023?" 
+    → Critic fails: "GDP should be in billions, with source."
+    → Triggers retry path (Phase 5).
+
+  Deliverable: Pass/fail + feedback for each executor output.
+
+--------------------------------------------------------------------------------
+
+PHASE 5: Add retry logic
+------------------------
+  What to build:
+    - In main/agent loop: on critic fail, pass feedback to planner/executor
+    - Re-run executor (with feedback) or re-plan if needed
+    - MAX_RETRIES (e.g., 2) to prevent infinite loops
+
+  Why it matters:
+    Self-improvement is what separates agents from one-shot systems.
+
+  Expected outcome:
+    First attempt wrong → critic feedback → second attempt correct.
+
+  Deliverable: Agent that improves answers based on critic feedback.
+
+--------------------------------------------------------------------------------
+
+PHASE 6 (Advanced)
+------------------
+  What to build:
+    - Dynamic tool selection: executor uses LLM to pick tool from registry by 
+      task description
+    - Multi-step planning: planner outputs ordered steps with dependencies
+    - Scoring system: critic returns score 0–100; retry only if below threshold
+
+  Why it matters:
+    Scales to more tools and harder tasks.
+
+  Expected outcome:
+    Complex query like "Compare GDP of top 3 economies and summarize" 
+    → Multiple search calls, calculator for ratios, structured summary.
+
+  Deliverable: Production-ready agent with flexible tool use and scoring.
+
+
+================================================================================
+5. TECH DESIGN DECISIONS
+================================================================================
+
+WHY NOT USING LANGCHAIN
+-----------------------
+  - Learning: Building from scratch teaches agent loops, tool semantics, and 
+    prompt design at a fundamental level.
+  - Control: No hidden abstractions; every component is explicit and debuggable.
+  - Portability: No framework lock-in; easy to swap LLM provider or tool impl.
+  - Resume/Interview: Demonstrates deep understanding, not framework usage.
+
+WHY BUILDING CUSTOM COMPONENTS
+------------------------------
+  - Planner: Needs domain-specific decomposition logic; generic chains may not 
+    fit your task structure.
+  - Executor: Tool selection can be rule-based, LLM-based, or hybrid; custom 
+    lets you tune this.
+  - Critic: Evaluation criteria are task-dependent; you define what "good" means.
+  - Memory: Short-term can be a list; long-term can start as JSON, then evolve 
+    to vector DB without touching planner/executor.
+
+ADVANTAGES OF THIS APPROACH
+---------------------------
+  - Clear separation of concerns: planner, executor, critic, memory are isolated.
+  - Testable: Mock LLM or tools to unit-test each component.
+  - Extensible: Add tools by registering; add memory backends by abstracting.
+  - Minimal dependencies: openai (or anthropic), python-dotenv, requests.
+
+
+================================================================================
+6. GITHUB STRUCTURE & STRATEGY
+================================================================================
+
+REPO STRUCTURE
+--------------
+  - main branch: stable, deployable code
+  - develop (optional): integration branch for phases
+  - feature branches: phase-1-basic-loop, phase-2-tools, etc.
+
+ORGANIZE COMMITS PHASE-WISE
+----------------------------
+  Phase 1: 1–3 commits (config, planner, executor, main)
+  Phase 2: 2–3 commits (tool registry, calculator, search, executor integration)
+  Phase 3: 1–2 commits (memory module, main integration)
+  Phase 4: 1–2 commits (critic, integration)
+  Phase 5: 1–2 commits (retry loop, config)
+  Phase 6: 2–4 commits (dynamic selection, multi-step, scoring)
+
+EXAMPLE COMMIT MESSAGES
+-----------------------
+  feat: add basic planner and executor loop
+  feat(tools): add calculator and search tools with registry
+  feat(memory): add short-term memory for multi-step context
+  feat(critic): add output evaluation with pass/fail feedback
+  feat(retry): add retry loop on critic failure
+  refactor: extract agent orchestrator from main
+  docs: add README with architecture and usage
+
+BRANCH STRATEGY (OPTIONAL)
+--------------------------
+  main ← phase-1-basic-loop ← phase-2-tools ← phase-3-memory ...
+  Merge each phase into main after manual verification.
+  Use PRs if collaborating; squash optional for solo dev.
+
+
+================================================================================
+7. README TEMPLATE
+================================================================================
+
+(Content below can be copied into README.md when ready.)
+
+---
+# Autonomous Agent System
+
+A lightweight, framework-free autonomous agent that demonstrates planning, 
+execution, memory, self-reflection, and retry/improvement loops.
+
+## Architecture
+
+```
+User Input → Planner → Executor → Critic → Memory → [Retry Loop] → Output
+```
+
+- **Planner**: Decomposes goals into sub-tasks
+- **Executor**: Runs tools (search, calculator)
+- **Critic**: Evaluates output quality
+- **Memory**: Short-term context for multi-step tasks
+- **Retry Loop**: Improves answers when critic fails
+
+## Features
+
+- Custom planner for task decomposition
+- Tool registry with search and calculator
+- Short-term memory across steps
+- LLM-based critic for quality checks
+- Configurable retry on failure
+
+## Setup
+
+```bash
+python -m venv venv
+venv\Scripts\activate   # Windows
+pip install -r requirements.txt
+cp .env.example .env   # Add your API key
+```
+
+## Usage
+
+```bash
+python main.py "What is the GDP of Japan and India?"
+```
+
+Or interactive:
+
+```bash
+python main.py
+> Search for Python async best practices
+> Now summarize the top 3 results
+```
+
+## License
+
+MIT
+---
+
+
+================================================================================
+8. RESUME BULLETS
+================================================================================
+
+  • Designed and implemented an autonomous agent system with planning, execution, 
+    memory, and self-reflection loops, achieving self-correction on multi-step 
+    tasks without high-level frameworks.
+
+  • Built a custom tool registry and executor that dynamically selects search 
+    and calculator tools based on task decomposition, with a critic module for 
+    output evaluation and configurable retry logic.
+
+  • Architected a modular agent pipeline (Planner → Executor → Critic → Memory) 
+    from scratch to demonstrate production-ready agent patterns, with clear 
+    separation of concerns and extensible tool integration.
+
+
+================================================================================
+9. INTERVIEW QUESTIONS
+================================================================================
+
+  How does planning work?
+  - Planner receives user goal and optional memory context. It uses an LLM to 
+    output an ordered list of sub-tasks. Each task maps to a tool or an LLM call. 
+    Dependencies are implicit in ordering (e.g., search before summarize).
+
+  How does retry work?
+  - After executor produces output, critic evaluates it. If critic fails, feedback 
+    is passed back. Executor (or planner) gets another attempt with that feedback. 
+    Retries are capped (e.g., 2–3) to avoid infinite loops.
+
+  How does memory work?
+  - Short-term: In-memory store of (task, result) pairs per turn. Planner and 
+    executor receive a summarization or raw history for context. Long-term: 
+    Optional; can persist successful patterns or user preferences to file or 
+    vector DB.
+
+  What are failure cases?
+  - Planner produces wrong or too many steps → wasted API calls
+  - Executor selects wrong tool → wrong answer
+  - Critic too strict → unnecessary retries; too loose → bad answers slip through
+  - Retry limit exceeded → user gets best-effort output with explanation
+  - API/tool errors → executor should catch and return structured error; critic 
+    may treat as fail and trigger retry
+
+
+================================================================================
+10. FUTURE IMPROVEMENTS
+================================================================================
+
+  - Long-term memory: Vector DB (e.g., Chroma, Pinecone) for semantic retrieval 
+    of past interactions and learned patterns.
+
+  - Tool learning: Track which tools work well for which task types; use for 
+    better tool selection or few-shot examples.
+
+  - Multi-agent collaboration: Specialized agents (researcher, coder, reviewer) 
+    with handoff and shared memory.
+
+  - Streaming output: Stream planner steps and tool results for better UX.
+
+  - Observability: Logging, metrics (latency, retry count), tracing for debugging.
+
+  - Fine-tuned critic: Small model fine-tuned on (output, task) → pass/fail for 
+    faster, cheaper evaluation.
+
+  - Human-in-the-loop: Pause for approval on high-stakes tool calls (e.g., 
+    send email, delete file).
+
+
+================================================================================
+  END OF PLAN
+================================================================================
