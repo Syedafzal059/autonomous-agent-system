@@ -10,7 +10,8 @@ class Memory:
 
     def _ensure_file(self):
         if not os.path.exists(MEMORY_FILE):
-            with open(MEMORY_FILE , 'w') as f:
+            os.makedirs(os.path.dirname(MEMORY_FILE), exist_ok=True)
+            with open(MEMORY_FILE, 'w') as f:
                 json.dump([], f)
 
 
