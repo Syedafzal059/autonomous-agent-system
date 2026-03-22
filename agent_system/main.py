@@ -1,6 +1,7 @@
 from .planner import create_plan
 from .executer import executer_plan
 from .memory import Memory
+from .critic import evaluate
 
 
 def run_agent():
@@ -19,6 +20,13 @@ def run_agent():
     print("\n[EXECUTOR]")
     result = executer_plan(plan)
     print(result)
+
+    print("\n[CRITIC]")
+    evaluation = evaluate(user_input, plan, result)
+    print(evaluation)
+
+    #store everything
+    memory.add(user_input, plan, result)
 
 
 if __name__ =="__main__":
