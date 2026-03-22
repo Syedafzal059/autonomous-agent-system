@@ -4,37 +4,43 @@ A **framework-free** autonomous agent that demonstrates planning, tool execution
 
 ## Overview
 
-This system implements the canonical agent loop: decompose → execute → evaluate → persist. It handles multi-step tasks by breaking goals into sub-tasks, selecting and running appropriate tools, evaluating outputs, and maintaining context across turns.
+This system implements the canonical agent loop: decompose → execute → evaluate → persist. It handles multi-step tasks by breaking goals into sub-tasks, selecting and running appropriate tools, evaluating outputs, and maintaining context across turns. A **retry loop** re-plans when the critic score is below threshold, feeding feedback into the planner for iterative improvement.
 
 ```
 User Input
      │
      ▼
-┌─────────┐     ┌──────────┐     ┌────────┐     ┌────────┐
-│ PLANNER │────▶│ EXECUTOR │────▶│ CRITIC │────▶│ MEMORY │
-└────┬────┘     └──────────┘     └────────┘     └───┬────┘
-     │                │                │             │
-     └────────────────┴────────────────┴─────────────┘
-                      (context feedback)
+┌──────────────────────────────────────────────────────────────┐
+│  RETRY LOOP (max attempts, score threshold, best-result)     │
+│                                                               │
+│  ┌─────────┐     ┌──────────┐     ┌────────┐     ┌────────┐  │
+│  │ PLANNER │────▶│ EXECUTOR │────▶│ CRITIC │────▶│ MEMORY │  │
+│  └────┬────┘     └──────────┘     └────┬────┘     └───┬────┘  │
+│       │                │               │              │      │
+│       │                │         [score ≥ threshold?]   │      │
+│       │  feedback ◀────┴───────────────┤               │      │
+│       └────────────────────────────────┴───────────────┘      │
+└──────────────────────────────────────────────────────────────┘
 ```
 
 ## Features
 
 | Component | Description |
 |-----------|-------------|
-| **Planner** | Decomposes user goals into ordered sub-tasks using LLM |
+| **Planner** | Decomposes user goals into ordered sub-tasks; uses critic feedback to improve on retry |
 | **Executor** | Dynamically selects tools (calculator, search) via LLM and runs them |
-| **Critic** | Evaluates output quality against the original task |
+| **Critic** | Evaluates output (score 0–10, feedback); drives retry and stopping decisions |
 | **Memory** | Short-term (session) + long-term (JSON persistence) for context-aware planning |
+| **Retry Loop** | Re-runs planner→executor→critic until score ≥ threshold or max attempts; tracks best result |
 
 ## Project Structure
 
 ```
 agent_system/
-├── main.py           # Entry point, orchestrates the agent loop
-├── planner.py       # Task decomposition with optional memory context
+├── main.py           # Entry point, orchestrates retry loop + agent pipeline
+├── planner.py       # Task decomposition; accepts memory context and critic feedback
 ├── executer.py      # Tool selection and execution
-├── critic.py        # Output evaluation
+├── critic.py        # Output evaluation (score + feedback)
 ├── memory.py        # Short-term + long-term storage
 ├── tools/
 │   ├── base_tool.py # Tool interface
@@ -43,6 +49,8 @@ agent_system/
 ├── utils/
 │   └── llm.py       # OpenAI client wrapper
 └── data/            # Persistent memory store (created at runtime)
+
+config.py            # MAX_RETRIES, SCORE_THRESHOLD (project root)
 ```
 
 ## Requirements
@@ -69,28 +77,46 @@ pip install -r requirements.txt
 cp .env.example .env
 # Set OPENAI_API_KEY in .env
 
-# Run
+# Run (from project root so config is found)
 python -m agent_system.main
 ```
 
+## Configuration
+
+Edit `config.py` to tune retry behavior:
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `MAX_RETRIES` | 3 | Maximum planner→executor→critic cycles per task |
+| `SCORE_THRESHOLD` | 7 | Stop early when critic score ≥ this (0–10 scale) |
+
 ## Usage
 
-Interactive mode prompts for a task, then runs the full pipeline:
+Interactive mode prompts for a task, then runs the retry loop:
 
 ```
 Enter your task:  Search for best laptops under 1 lakh and compare top 3
 
+ Attempt 1
 [PLANNER]
 1. Search for laptops under 1 lakh
 2. Compare top 3 results
 ...
-
 [EXECUTOR]
-1. Search for laptops under 1 lakh -> Search result for: ...
 ...
-
 [CRITIC]
-Evaluation: ...
+{"score": 5, "feedback": "Missing comparison criteria"}
+
+ Attempt 2
+[PLANNER]
+(Improved plan using feedback)
+...
+[CRITIC]
+{"score": 8, "feedback": "..."}
+ GOOD ENOUGH!, stopping retries
+
+ FINAL OUTPUT
+(best result across attempts)
 ```
 
 ## Tech Stack
@@ -103,6 +129,7 @@ Evaluation: ...
 
 - **No LangChain**: Full control over each component; easier to debug and extend
 - **Explicit components**: Planner, Executor, Critic, Memory are isolated and testable
+- **Retry with score threshold**: Iterative improvement; stops when quality is good enough
 - **Env-based config**: API keys and sensitive data via environment variables
 
 ## License
